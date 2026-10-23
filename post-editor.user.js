@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         עורך פוסטים עם Claude
 // @namespace    https://github.com/shmuel-sinay/poster
-// @version      1.2.0
+// @version      1.3.0
 // @description  עריכה אוטומטית של פוסטים בעזרת Claude: מסדר את הטקסט כמו מדריך מעוצב, ושומר על הניסוח המקורי.
 // @author       shmuel-sinay
 // @match        *://*/*
@@ -83,7 +83,7 @@
     model: 'claude-sonnet-5-5',
     format: 'forum', // forum = Markdown של הפורום עם ארגז הכלים, plain = טקסט רגיל לפייסבוק/וואטסאפ
     toolbox: '', // ריק = ארגז הכלים המובנה
-    exampleUrls: 'https://mitmachim.top/topic/102072',
+    exampleUrls: '', // קישורים לנושאים בפורום ללמוד מהם (בנוסף לדוגמאות המובנות מהמאגר)
     examples: '', // קוד המקור של פוסטים לדוגמה, נמשך מהפורום
     extra: '',
     showButton: true,
@@ -93,7 +93,9 @@
     ['claude-opus-5-5', 'Opus 5.5 (הכי חזק, איטי ויקר יותר)'],
     ['claude-haiku-5-5', 'Haiku 5.5 (הכי מהיר וזול)'],
   ];
-  const MAX_EXAMPLES_CHARS = 30000;
+  const MAX_EXAMPLES_CHARS = 60000;
+  // פוסטים לדוגמה שמגיעים מהמאגר בגיטהאב (תיקיית examples), כדי שאפשר להוסיף דוגמאות לכולם בלי לעדכן את הסקריפט
+  const BUILTIN_EXAMPLES_BASE = 'https://raw.githubusercontent.com/shmuel-sinay/poster/main/examples/';
   const get = (k) => GM_getValue(k, DEFAULTS[k]);
   const set = (k, v) => GM_setValue(k, v);
 
@@ -112,7 +114,8 @@
 פורמט פלט: טקסט רגיל שמוצג יפה בפייסבוק ובוואטסאפ, בלי סימני Markdown כמו # או **.
 השתמש בשורות ריקות בין חלקים, בכותרות קצרות בשורה נפרדת, ברשימות ממוספרות (1. 2. 3.) או בתבליטים (•), ובאימוג'י מעטים בתחילת כותרות כשזה מתאים.${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`;
     }
-    const examples = (get('examples') || '').trim().slice(0, MAX_EXAMPLES_CHARS);
+    const examples = [GM_getValue('builtinExamples', ''), get('examples') || '']
+      .map((x) => x.trim()).filter(Boolean).join('\n\n---\n\n').slice(0, MAX_EXAMPLES_CHARS);
     return `${rules}
 
 <ארגז_כלים>
@@ -126,6 +129,125 @@ ${examples}
 </פוסטים_לדוגמה>
 ` : ''}
 פורמט פלט: קוד מקור של פוסט בפורום, מוכן להדבקה בעורך הפורום, תוך שימוש בכלים מארגז הכלים ומהדוגמאות.${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`;
+  }
+
+  // ---------- המרת HTML של פוסט מהפורום חזרה לקוד המקור (Markdown של הפורום) ----------
+  // משמש כשמעלים קובץ HTML של מדריך, או כשקוד המקור לא זמין מהפורום.
+  function htmlToForum(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const rgbToHex = (c) => {
+      const m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      return m ? '#' + [m[1], m[2], m[3]].map((n) => (+n).toString(16).padStart(2, '0')).join('') : c;
+    };
+    function inline(node) {
+      let out = '';
+      node.childNodes.forEach((n) => { out += conv(n, 0); });
+      return out;
+    }
+    function blockChildren(node, depth) {
+      let out = '';
+      node.childNodes.forEach((n) => {
+        if (n.nodeType === 3 && !n.textContent.trim()) return; // רווחים בין בלוקים
+        out += conv(n, depth);
+      });
+      return out;
+    }
+    function list(node, depth, ordered) {
+      let out = '';
+      let i = 1;
+      node.querySelectorAll(':scope > li').forEach((li) => {
+        let text = '';
+        let sub = '';
+        li.childNodes.forEach((c) => {
+          if (c.nodeType === 1 && (c.tagName === 'UL' || c.tagName === 'OL')) sub += list(c, depth + 1, c.tagName === 'OL');
+          else if (c.nodeType === 1 && c.tagName === 'P') text += (text ? ' ' : '') + inline(c).trim();
+          else text += conv(c, depth);
+        });
+        out += '  '.repeat(depth) + (ordered ? `${i++}. ` : '- ') + text.trim() + '\n' + sub;
+      });
+      return depth ? out : out + '\n';
+    }
+    function conv(n, depth) {
+      if (n.nodeType === 3) return n.textContent.replace(/\s*\n\s*/g, n.parentElement && n.parentElement.closest('pre') ? '\n' : ' ');
+      if (n.nodeType !== 1) return '';
+      const tag = n.tagName;
+      const cls = n.classList;
+      if (cls.contains('anchor-offset')) return '';
+      if (tag === 'BUTTON' && cls.contains('extended-markdown-spoiler')) return '';
+      if (cls.contains('collapse') || cls.contains('spoiler')) {
+        if (cls.contains('collapse')) return ':::\n' + blockChildren(n.querySelector('.spoiler') || n, depth).trim() + '\n:::\n\n';
+        return blockChildren(n, depth);
+      }
+      if (cls.contains('admonition')) {
+        const type = ['warning', 'important', 'info'].find((t) => cls.contains(t)) || 'info';
+        const titleEl = n.querySelector('.admonition-title');
+        const title = titleEl ? titleEl.textContent.trim() : type;
+        const body = [...n.children].filter((c) => c !== titleEl).map((c) => inline(c).trim()).join('\n');
+        return `!!! ${type} [${title}]: ${body}\n\n`;
+      }
+      if (cls.contains('extended-markdown-tooltip')) return `°fa-info°(${n.getAttribute('title') || n.getAttribute('data-bs-original-title') || ''})`;
+      if (cls.contains('emoji')) return n.getAttribute('alt') || '';
+      switch (tag) {
+        case 'H1': case 'H2': case 'H3': case 'H4': case 'H5': case 'H6': {
+          const t = inline(n).trim();
+          if (cls.contains('text-header')) return `#anchor(${t})\n\n`;
+          return '#'.repeat(+tag[1]) + ' ' + t + '\n\n';
+        }
+        case 'P': {
+          const t = inline(n).trim();
+          if (!t) return '';
+          const al = (n.getAttribute('style') || '').match(/text-align:\s*(\w+)/);
+          if (al && al[1] === 'center') return `|-${t}-|\n\n`;
+          if (al && al[1] === 'left') return `|-${t}\n\n`;
+          if (al && al[1] === 'right') return `${t}-|\n\n`;
+          return t + '\n\n';
+        }
+        case 'BR': return '\n';
+        case 'HR': return '___\n\n';
+        case 'STRONG': case 'B': { const t = inline(n); return t.trim() ? `**${t.trim()}**` : t; }
+        case 'EM': case 'I': { const t = inline(n); return t.trim() ? `*${t.trim()}*` : ''; }
+        case 'U': return `***${inline(n).trim()}***`;
+        case 'S': case 'DEL': case 'STRIKE': return `~~${inline(n).trim()}~~`;
+        case 'CODE': return n.closest('pre') ? n.textContent : '`' + n.textContent + '`';
+        case 'PRE': return '```\n' + n.textContent.replace(/\n$/, '') + '\n```\n\n';
+        case 'BLOCKQUOTE': return blockChildren(n, depth).trim().split('\n').map((l) => '> ' + l).join('\n') + '\n\n';
+        case 'UL': return list(n, depth, false);
+        case 'OL': return list(n, depth, true);
+        case 'SPAN': {
+          const color = n.style && n.style.color;
+          const t = inline(n);
+          return color && t.trim() ? `%(${rgbToHex(color)})[${t.trim()}]` : t;
+        }
+        case 'A': {
+          if (cls.contains('plugin-mentions-user')) return n.textContent.trim();
+          // מקצרים קישורי נושאים בפורום (הכתובת המלאה ארוכה מאוד ולא נחוצה)
+          const href = (n.getAttribute('href') || '').replace(/(\/topic\/\d+)\/[^?#]*(\?[^#]*)?$/, '$1');
+          const t = inline(n).trim();
+          if (!href || href === t) return t || href;
+          return `[${t}](${href})`;
+        }
+        case 'IMG': {
+          const src = n.getAttribute('src') || '';
+          const alt = n.getAttribute('alt') || '';
+          return `![${alt}](${/^data:|\[IMG\]/.test(src) || !src ? 'קישור-לתמונה' : src})`;
+        }
+        case 'INPUT': return n.type === 'checkbox' ? (n.hasAttribute('checked') ? '[X]' : '[ ]') : '';
+        case 'TABLE': {
+          const rows = [...n.querySelectorAll('tr')].map((tr) => [...tr.children].map((c) => inline(c).trim()));
+          if (!rows.length) return '';
+          const line = (r) => '| ' + r.join(' | ') + ' |';
+          return [line(rows[0]), '|' + rows[0].map(() => '---:').join('|') + '|', ...rows.slice(1).map(line)].join('\n') + '\n\n';
+        }
+        case 'SCRIPT': case 'STYLE': case 'HEADER': return '';
+        case 'DIV': case 'ARTICLE': case 'SECTION': case 'BODY': return blockChildren(n, depth);
+        default: return inline(n);
+      }
+    }
+    // קובץ ייצוא של נושא: לוקחים את ההודעה הראשונה בלבד
+    const root = doc.querySelector('article .content') || doc.querySelector('.content') || doc.body;
+    const title = (doc.querySelector('title') || {}).textContent || '';
+    const md = blockChildren(root, 0).replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+(?!- |\d+\. )/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    return { title: title.trim(), markdown: md };
   }
 
   // ---------- משיכת פוסטים לדוגמה מהפורום ----------
@@ -157,7 +279,7 @@ ${examples}
       if (content) return `### פוסט לדוגמה: ${title}\n${content}`;
     } catch (e) { /* ננסה את ה-HTML */ }
     if (first && first.content) {
-      return `### פוסט לדוגמה (HTML כפי שמוצג בפורום, כי קוד המקור לא היה זמין): ${title}\n${first.content}`;
+      return `### פוסט לדוגמה: ${title}\n${htmlToForum(first.content).markdown}`;
     }
     throw new Error('לא הצלחתי לקרוא את הפוסט ב-' + link);
   }
@@ -170,6 +292,31 @@ ${examples}
     }
     return { text: out.join('\n\n---\n\n'), count: out.length, errors };
   }
+  // טוען את הדוגמאות המובנות מגיטהאב, פעם ביום
+  function httpText(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET', url, timeout: 30000,
+        onload: (r) => (r.status === 200 ? resolve(r.responseText) : reject(new Error('שגיאה ' + r.status))),
+        onerror: () => reject(new Error('שגיאת רשת')), ontimeout: () => reject(new Error('תם הזמן')),
+      });
+    });
+  }
+  async function refreshBuiltinExamples(force) {
+    const last = GM_getValue('builtinExamplesAt', 0);
+    if (!force && Date.now() - last < 24 * 3600 * 1000) return;
+    try {
+      const index = await httpText(BUILTIN_EXAMPLES_BASE + 'index.txt');
+      const files = index.split('\n').map((x) => x.trim()).filter((x) => x && !x.startsWith('#'));
+      const parts = [];
+      for (const f of files) {
+        try { parts.push(await httpText(BUILTIN_EXAMPLES_BASE + encodeURIComponent(f))); } catch (e) { /* מדלגים */ }
+      }
+      if (parts.length) GM_setValue('builtinExamples', parts.join('\n\n---\n\n'));
+      GM_setValue('builtinExamplesAt', Date.now());
+    } catch (e) { /* אין חיבור לגיטהאב: ממשיכים עם מה שיש */ }
+  }
+
 
   // ---------- קריאה ל-API ----------
   function callClaude(text) {
@@ -339,7 +486,9 @@ ${examples}
         <div class="row"><button class="b" data-a="resettools">החזר את ארגז הכלים לברירת המחדל</button></div>
         <label>פוסטים מעוצבים ללמוד מהם (קישור לנושא בכל שורה)</label>
         <textarea id="pe-exurls" style="min-height:50px" placeholder="https://mitmachim.top/topic/..."></textarea>
-        <div class="row"><button class="b" data-a="learn">משוך את קוד המקור מהפורום</button></div>
+        <div class="row"><button class="b" data-a="learn">משוך את קוד המקור מהפורום</button>
+          <button class="b" data-a="loadhtml">טען מדריך מקובץ HTML</button>
+          <input type="file" id="pe-file" accept=".html,.htm,.md,text/html" multiple style="display:none"></div>
         <label>קוד המקור של הפוסטים לדוגמה</label>
         <textarea id="pe-examples" style="min-height:80px" placeholder="נמלא אוטומטית בלחיצה על הכפתור למעלה. אפשר גם להדביק כאן ידנית קוד מקור של פוסט (מתוך חלון העריכה של הפורום)."></textarea>
         <div class="hint">מכאן ה-AI לומד את התחביר המדויק של פסי הכותרת, הספוילרים וכל השאר. כדאי להיות מחובר לפורום בזמן המשיכה.</div>
@@ -416,6 +565,7 @@ ${examples}
         $('pe-settings').classList.remove('open');
         msg('ההגדרות נשמרו.', 'ok');
         break;
+      case 'loadhtml': $('pe-file').click(); break;
       case 'resettools': $('pe-toolbox').value = DEFAULT_TOOLBOX; msg('ארגז הכלים הוחזר לברירת המחדל. לחץ "שמור הגדרות".'); break;
       case 'learn': {
         a.disabled = true;
@@ -466,6 +616,25 @@ ${examples}
       }
     }
   });
+
+  // טעינת מדריכים מקובצי HTML (ייצוא של נושא מהפורום) כפוסטים לדוגמה
+  $('pe-file').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    const added = [];
+    for (const f of files) {
+      const text = await f.text();
+      const r = /<\w+[^>]*>/.test(text) ? htmlToForum(text) : { title: f.name, markdown: text };
+      if (r.markdown) added.push(`### פוסט לדוגמה: ${r.title || f.name}\n${r.markdown}`);
+    }
+    e.target.value = '';
+    if (!added.length) { msg('לא מצאתי תוכן בקבצים.', 'err'); return; }
+    const cur = $('pe-examples').value.trim();
+    $('pe-examples').value = [cur, ...added].filter(Boolean).join('\n\n---\n\n');
+    set('examples', $('pe-examples').value);
+    msg(`נוספו ${added.length} מדריכים לדוגמה ונשמרו.`, 'ok');
+  });
+
+  refreshBuiltinExamples(false);
 
   // קיצור מקלדת: Alt+Shift+E
   document.addEventListener('keydown', (e) => {
