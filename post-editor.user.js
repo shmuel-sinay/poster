@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         עורך פוסטים עם Claude
 // @namespace    https://github.com/shmuel-sinay/poster
-// @version      1.3.0
+// @version      1.4.0
 // @description  עריכה אוטומטית של פוסטים בעזרת Claude: מסדר את הטקסט כמו מדריך מעוצב, ושומר על הניסוח המקורי.
 // @author       shmuel-sinay
 // @match        *://*/*
@@ -419,11 +419,11 @@ ${examples}
   // ---------- ממשק ----------
   const css = `
   #pe-root, #pe-root * { box-sizing: border-box; font-family: system-ui, "Segoe UI", Arial, sans-serif; }
-  #pe-fab { position: fixed; bottom: 20px; left: 20px; z-index: 2147483646; width: 48px; height: 48px; border-radius: 50%;
+  #pe-fab { position: fixed; bottom: 90px; left: 20px; z-index: 2147483646; width: 48px; height: 48px; border-radius: 50%;
     border: none; background: #d97757; color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   #pe-fab:hover { transform: scale(1.06); }
-  #pe-panel { position: fixed; bottom: 80px; left: 20px; z-index: 2147483647; width: min(520px, calc(100vw - 40px));
-    max-height: calc(100vh - 100px); overflow-y: auto; display: none; flex-direction: column; gap: 8px; direction: rtl; text-align: right;
+  #pe-panel { position: fixed; bottom: 150px; left: 20px; z-index: 2147483647; width: min(520px, calc(100vw - 40px));
+    max-height: calc(100vh - 170px); overflow-y: auto; display: none; flex-direction: column; gap: 8px; direction: rtl; text-align: right;
     background: #fff; color: #1f1f1f; border-radius: 12px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.3); font-size: 14px; }
   #pe-panel.open { display: flex; }
   #pe-panel h3 { margin: 0; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
@@ -635,6 +635,34 @@ ${examples}
   });
 
   refreshBuiltinExamples(false);
+
+  // ---------- כפתור ✨ בתוך שורת הכלים של עורך ההודעות בפורום (NodeBB) ----------
+  function composerTextarea(fromEl) {
+    const composer = (fromEl && fromEl.closest('.composer')) || document.querySelector('.composer');
+    return composer && composer.querySelector('textarea.write, textarea');
+  }
+  function addComposerButtons() {
+    document.querySelectorAll('.composer .formatting-bar, .composer .formatting-group').forEach((bar) => {
+      const group = bar.matches('.formatting-group') ? bar : bar.querySelector('.formatting-group') || bar;
+      if (group.querySelector('.pe-composer-btn')) return;
+      const li = document.createElement(group.tagName === 'UL' ? 'li' : 'span');
+      li.className = 'pe-composer-btn';
+      li.innerHTML = '<button type="button" class="btn btn-sm btn-link" title="עריכה אוטומטית עם Claude (Alt+Shift+E)" style="font-size:16px;line-height:1;padding:4px 6px">✨</button>';
+      li.querySelector('button').addEventListener('mousedown', (e) => e.preventDefault());
+      li.querySelector('button').addEventListener('click', (e) => {
+        e.preventDefault();
+        const ta = composerTextarea(e.currentTarget);
+        if (ta) { lastField = ta; inEl.value = ''; }
+        openPanel();
+      });
+      group.insertBefore(li, group.firstChild);
+    });
+  }
+  if (document.body) {
+    new MutationObserver(() => { if (document.querySelector('.composer')) addComposerButtons(); })
+      .observe(document.body, { childList: true, subtree: true });
+    addComposerButtons();
+  }
 
   // קיצור מקלדת: Alt+Shift+E
   document.addEventListener('keydown', (e) => {
