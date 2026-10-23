@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         עורך פוסטים עם Claude
 // @namespace    https://github.com/shmuel-sinay/poster
-// @version      1.0.0
+// @version      1.1.0
 // @description  עריכה אוטומטית של פוסטים בעזרת Claude: מסדר את הטקסט כמו מדריך מעוצב, ושומר על הניסוח המקורי.
 // @author       shmuel-sinay
 // @match        *://*/*
@@ -11,6 +11,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
 // @connect      api.anthropic.com
+// @connect      mitmachim.top
+// @connect      *
 // @run-at       document-idle
 // @noframes
 // @updateURL    https://raw.githubusercontent.com/shmuel-sinay/poster/main/post-editor.user.js
@@ -22,10 +24,29 @@
   'use strict';
 
   // ---------- הגדרות ----------
+  // ארגז הכלים: מה הפורום יודע להציג. ה-AI מקבל את הרשימה הזאת בכל עריכה.
+  // אפשר לערוך אותה בהגדרות, ולהוסיף כלים שחסרים.
+  const DEFAULT_TOOLBOX = `הפורום (מתמחים טופ, מבוסס NodeBB) כותב ב-Markdown. הכלים שעומדים לרשותך:
+- **הדגשה**: **טקסט**
+- *נטוי*: *טקסט*
+- כותרות: # כותרת ראשית, ## כותרת משנה, ### כותרת קטנה
+- רשימת תבליטים: שורות שמתחילות ב- "- "
+- רשימה ממוספרת: 1. 2. 3.
+- קישור: [טקסט הקישור](https://...)
+- תמונה: ![תיאור](https://...)  (רק קישורים שכבר מופיעים בפוסט המקורי)
+- ציטוט / הערה בולטת: שורה שמתחילה ב- "> "
+- קוד: \`קוד קצר\` או בלוק בין שלוש גרשיים הפוכים
+- טבלה: | עמודה | עמודה |  ושורה מתחתיה |---|---|
+- קו מפריד: ---
+- פס כותרת כהה ברוחב מלא (כמו בפוסטים המעוצבים בפורום) וספוילר (כפתור "Spoiler" שמסתיר תוכן ארוך): השתמש בדיוק בתחביר שמופיע בפוסטים לדוגמה. אם אין דוגמה שמראה אותם, אל תמציא תחביר, והשתמש בכותרת ## במקום פס כותרת.`;
+
   const DEFAULTS = {
     apiKey: '',
     model: 'claude-sonnet-5-5',
-    format: 'plain', // plain = פייסבוק/וואטסאפ, markdown = אתרים שתומכים ב-Markdown
+    format: 'forum', // forum = Markdown של הפורום עם ארגז הכלים, plain = טקסט רגיל לפייסבוק/וואטסאפ
+    toolbox: DEFAULT_TOOLBOX,
+    exampleUrls: 'https://mitmachim.top/topic/102072',
+    examples: '', // קוד המקור של פוסטים לדוגמה, נמשך מהפורום
     extra: '',
     showButton: true,
   };
@@ -34,24 +55,82 @@
     ['claude-opus-5-5', 'Opus 5.5 (הכי חזק, איטי ויקר יותר)'],
     ['claude-haiku-5-5', 'Haiku 5.5 (הכי מהיר וזול)'],
   ];
+  const MAX_EXAMPLES_CHARS = 30000;
   const get = (k) => GM_getValue(k, DEFAULTS[k]);
   const set = (k, v) => GM_setValue(k, v);
 
   // ---------- ההנחיה ל-Claude ----------
   function systemPrompt() {
-    const fmt = get('format') === 'markdown'
-      ? `פורמט פלט: Markdown (כותרות עם #, רשימות עם -, הדגשה עם **).`
-      : `פורמט פלט: טקסט רגיל שמוצג יפה בפייסבוק, וואטסאפ ופורומים, בלי סימני Markdown כמו # או **.
-השתמש בשורות ריקות בין חלקים, בכותרות קצרות בשורה נפרדת, ברשימות ממוספרות (1. 2. 3.) או בתבליטים (•), ובאימוג'י עניינים ומעטים בתחילת כותרות כשזה מתאים.`;
     const extra = (get('extra') || '').trim();
-    return `אתה עורך פוסטים. המשתמש ישלח טקסט של פוסט, ותפקידך להחזיר אותו ערוך כך שייראה כמו מדריך מסודר ומעוצב.
+    const rules = `אתה עורך פוסטים. המשתמש ישלח טקסט של פוסט, ותפקידך להחזיר אותו ערוך כך שייראה כמו מדריך מסודר ומעוצב.
 
 כללים:
 - שמור על הניסוח, הסגנון והתוכן המקוריים ככל האפשר. אל תוסיף מידע חדש ואל תשמיט מידע.
-- מותר: לתקן שגיאות כתיב ופיסוק, לחלק לפסקאות, להוסיף כותרת ראשית וכותרות משנה קצרות, להפוך רצף שלבים לרשימה ממוספרת ורצף פריטים לרשימת תבליטים, ולהדגיש את העיקר.
+- מותר: לתקן שגיאות כתיב ופיסוק, לחלק לפסקאות, להוסיף כותרת ראשית וכותרות לחלקים, להפוך רצף שלבים לרשימה ממוספרת ורצף פריטים לרשימת תבליטים, להדגיש את העיקר, ולהסתיר פרטים ארוכים בספוילר.
 - כתוב באותה שפה של הפוסט המקורי.
-- החזר רק את הפוסט הערוך, בלי הקדמה, בלי הסברים ובלי מרכאות סביבו.
-${fmt}${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`;
+- החזר רק את הפוסט הערוך, בלי הקדמה, בלי הסברים ובלי מרכאות או גדר קוד סביבו.`;
+    if (get('format') === 'plain') {
+      return `${rules}
+פורמט פלט: טקסט רגיל שמוצג יפה בפייסבוק ובוואטסאפ, בלי סימני Markdown כמו # או **.
+השתמש בשורות ריקות בין חלקים, בכותרות קצרות בשורה נפרדת, ברשימות ממוספרות (1. 2. 3.) או בתבליטים (•), ובאימוג'י מעטים בתחילת כותרות כשזה מתאים.${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`;
+    }
+    const examples = (get('examples') || '').trim().slice(0, MAX_EXAMPLES_CHARS);
+    return `${rules}
+
+<ארגז_כלים>
+${get('toolbox') || DEFAULT_TOOLBOX}
+</ארגז_כלים>
+${examples ? `
+להלן קוד המקור של פוסטים מעוצבים מהפורום. למד מהם איך כותבים בפורום כל כלי עיצוב (פסי כותרת, ספוילרים, צבעים, קישורי הורדה וכו'), ואיך בנוי פוסט טוב: פתיח, חלקים עם פסי כותרת, רשימות, ספוילרים לפרטים ארוכים, וסיום.
+השתמש באותו תחביר בדיוק ובמבנה דומה. אל תעתיק מהם תוכן, רק את העיצוב.
+<פוסטים_לדוגמה>
+${examples}
+</פוסטים_לדוגמה>
+` : ''}
+פורמט פלט: קוד מקור של פוסט בפורום, מוכן להדבקה בעורך הפורום, תוך שימוש בכלים מארגז הכלים ומהדוגמאות.${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`;
+  }
+
+  // ---------- משיכת פוסטים לדוגמה מהפורום ----------
+  function httpGet(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET', url, headers: { accept: 'application/json' }, timeout: 30000,
+        onload: (r) => {
+          if (r.status !== 200) return reject(new Error('שגיאה ' + r.status + ' ב-' + url));
+          try { resolve(JSON.parse(r.responseText)); } catch (e) { reject(new Error('תשובה לא תקינה מ-' + url)); }
+        },
+        onerror: () => reject(new Error('שגיאת רשת ב-' + url)),
+        ontimeout: () => reject(new Error('תם הזמן ב-' + url)),
+      });
+    });
+  }
+  // מקבל קישור לנושא ב-NodeBB ומחזיר את קוד המקור של ההודעה הראשונה בו
+  async function fetchTopicSource(link) {
+    const u = new URL(link.trim());
+    const m = u.pathname.match(/\/topic\/(\d+)/);
+    if (!m) throw new Error('זה לא נראה כמו קישור לנושא בפורום: ' + link);
+    const topic = await httpGet(`${u.origin}/api/topic/${m[1]}`);
+    const first = topic.posts && topic.posts[0];
+    const pid = topic.mainPid || (first && first.pid);
+    const title = topic.title || '';
+    try {
+      const raw = await httpGet(`${u.origin}/api/v3/posts/${pid}/raw`);
+      const content = (raw.response && raw.response.content) || raw.content;
+      if (content) return `### פוסט לדוגמה: ${title}\n${content}`;
+    } catch (e) { /* ננסה את ה-HTML */ }
+    if (first && first.content) {
+      return `### פוסט לדוגמה (HTML כפי שמוצג בפורום, כי קוד המקור לא היה זמין): ${title}\n${first.content}`;
+    }
+    throw new Error('לא הצלחתי לקרוא את הפוסט ב-' + link);
+  }
+  async function learnExamples(urlsText) {
+    const urls = urlsText.split(/\s+/).filter(Boolean);
+    const out = [];
+    const errors = [];
+    for (const url of urls) {
+      try { out.push(await fetchTopicSource(url)); } catch (e) { errors.push(e.message); }
+    }
+    return { text: out.join('\n\n---\n\n'), count: out.length, errors };
   }
 
   // ---------- קריאה ל-API ----------
@@ -159,7 +238,7 @@ ${fmt}${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`
     border: none; background: #d97757; color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   #pe-fab:hover { transform: scale(1.06); }
   #pe-panel { position: fixed; bottom: 80px; left: 20px; z-index: 2147483647; width: min(520px, calc(100vw - 40px));
-    max-height: calc(100vh - 100px); display: none; flex-direction: column; gap: 8px; direction: rtl; text-align: right;
+    max-height: calc(100vh - 100px); overflow-y: auto; display: none; flex-direction: column; gap: 8px; direction: rtl; text-align: right;
     background: #fff; color: #1f1f1f; border-radius: 12px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.3); font-size: 14px; }
   #pe-panel.open { display: flex; }
   #pe-panel h3 { margin: 0; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
@@ -213,9 +292,19 @@ ${fmt}${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`
         <select id="pe-model">${MODELS.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>
         <label>פורמט הפלט</label>
         <select id="pe-format">
-          <option value="plain">טקסט רגיל (פייסבוק, וואטסאפ, פורומים)</option>
-          <option value="markdown">Markdown (אתרים שתומכים בו)</option>
+          <option value="forum">פורום (מתמחים טופ) עם ארגז הכלים</option>
+          <option value="plain">טקסט רגיל (פייסבוק, וואטסאפ)</option>
         </select>
+        <label>ארגז הכלים של הפורום</label>
+        <textarea id="pe-toolbox" style="min-height:120px"></textarea>
+        <div class="hint">זו הרשימה שה-AI מקבל: אילו כלי עיצוב יש בפורום ואיך כותבים אותם. אפשר להוסיף או לתקן.</div>
+        <div class="row"><button class="b" data-a="resettools">החזר את ארגז הכלים לברירת המחדל</button></div>
+        <label>פוסטים מעוצבים ללמוד מהם (קישור לנושא בכל שורה)</label>
+        <textarea id="pe-exurls" style="min-height:50px" placeholder="https://mitmachim.top/topic/..."></textarea>
+        <div class="row"><button class="b" data-a="learn">משוך את קוד המקור מהפורום</button></div>
+        <label>קוד המקור של הפוסטים לדוגמה</label>
+        <textarea id="pe-examples" style="min-height:80px" placeholder="נמלא אוטומטית בלחיצה על הכפתור למעלה. אפשר גם להדביק כאן ידנית קוד מקור של פוסט (מתוך חלון העריכה של הפורום)."></textarea>
+        <div class="hint">מכאן ה-AI לומד את התחביר המדויק של פסי הכותרת, הספוילרים וכל השאר. כדאי להיות מחובר לפורום בזמן המשיכה.</div>
         <label>הנחיות נוספות (לא חובה)</label>
         <textarea id="pe-extra" style="min-height:60px" placeholder="למשל: בלי אימוג'י / תמיד לסיים בשורת סיכום"></textarea>
         <label style="font-weight:400"><input type="checkbox" id="pe-showbtn"> הצג את הכפתור הצף בכל אתר</label>
@@ -238,7 +327,10 @@ ${fmt}${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`
     $('pe-key').value = get('apiKey');
     $('pe-model').value = get('model');
     if (!$('pe-model').value) $('pe-model').value = DEFAULTS.model;
-    $('pe-format').value = get('format');
+    $('pe-format').value = get('format') === 'plain' ? 'plain' : 'forum';
+    $('pe-toolbox').value = get('toolbox');
+    $('pe-exurls').value = get('exampleUrls');
+    $('pe-examples').value = get('examples');
     $('pe-extra').value = get('extra');
     $('pe-showbtn').checked = !!get('showButton');
   }
@@ -273,18 +365,41 @@ ${fmt}${extra ? `\n\nהנחיות נוספות מהמשתמש:\n${extra}` : ''}`
         set('apiKey', $('pe-key').value.trim());
         set('model', $('pe-model').value);
         set('format', $('pe-format').value);
+        set('toolbox', $('pe-toolbox').value.trim() || DEFAULT_TOOLBOX);
+        set('exampleUrls', $('pe-exurls').value.trim());
+        set('examples', $('pe-examples').value.trim());
         set('extra', $('pe-extra').value);
         set('showButton', $('pe-showbtn').checked);
         applyFabVisibility();
         $('pe-settings').classList.remove('open');
         msg('ההגדרות נשמרו.', 'ok');
         break;
+      case 'resettools': $('pe-toolbox').value = DEFAULT_TOOLBOX; msg('ארגז הכלים הוחזר לברירת המחדל. לחץ "שמור הגדרות".'); break;
+      case 'learn': {
+        a.disabled = true;
+        msg('מושך פוסטים לדוגמה מהפורום...');
+        const r = await learnExamples($('pe-exurls').value);
+        a.disabled = false;
+        if (r.count) {
+          $('pe-examples').value = r.text;
+          set('examples', r.text);
+          set('exampleUrls', $('pe-exurls').value.trim());
+          msg(`נטענו ${r.count} פוסטים לדוגמה ונשמרו.` + (r.errors.length ? ' חלק נכשלו: ' + r.errors.join(' | ') : ''), 'ok');
+        } else msg('לא הצלחתי למשוך: ' + (r.errors.join(' | ') || 'אין קישורים'), 'err');
+        break;
+      }
       case 'run': {
         const text = inEl.value.trim();
         if (!text) { msg('אין טקסט לעריכה.', 'err'); break; }
         a.disabled = true;
-        msg('Claude עורך את הפוסט...');
         try {
+          // בפעם הראשונה: לומדים לבד את כלי העיצוב מהפוסטים לדוגמה
+          if (get('format') !== 'plain' && !get('examples') && get('exampleUrls')) {
+            msg('לומד את כלי העיצוב מהפוסטים לדוגמה בפורום...');
+            const r = await learnExamples(get('exampleUrls'));
+            if (r.count) set('examples', r.text);
+          }
+          msg('Claude עורך את הפוסט...');
           outEl.value = await callClaude(text);
           msg('מוכן! אפשר לתקן ידנית, ואז להכניס לשדה או להעתיק.', 'ok');
         } catch (err) {
