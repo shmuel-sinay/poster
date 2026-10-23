@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         עורך פוסטים עם Claude
 // @namespace    https://github.com/shmuel-sinay/poster
-// @version      1.4.1
+// @version      1.5.0
 // @description  עריכה אוטומטית של פוסטים בעזרת Claude: מסדר את הטקסט כמו מדריך מעוצב, ושומר על הניסוח המקורי.
 // @author       shmuel-sinay
 // @match        *://*/*
@@ -495,7 +495,8 @@ ${examples}
         <label>הנחיות נוספות (לא חובה)</label>
         <textarea id="pe-extra" style="min-height:60px" placeholder="למשל: בלי אימוג'י / תמיד לסיים בשורת סיכום"></textarea>
         <label style="font-weight:400"><input type="checkbox" id="pe-showbtn"> הצג את הכפתור הצף בכל אתר</label>
-        <div class="row"><button class="b primary" data-a="save">שמור הגדרות</button></div>
+        <div class="row"><button class="b primary" data-a="save">שמור הגדרות</button>
+          <button class="b" data-a="exportpage" title="מוריד קובץ עם מבנה הדף כפי שהוא אצלך, כדי לשלוח למפתח">ייצא את הדף לבדיקה</button></div>
       </div>
     </div>`;
   document.documentElement.appendChild(root);
@@ -572,6 +573,7 @@ ${examples}
         msg('ההגדרות נשמרו.', 'ok');
         break;
       case 'loadhtml': $('pe-file').click(); break;
+      case 'exportpage': exportPageForDebug(); msg('הקובץ ירד. שלח אותו למפתח.', 'ok'); break;
       case 'resettools': $('pe-toolbox').value = DEFAULT_TOOLBOX; msg('ארגז הכלים הוחזר לברירת המחדל. לחץ "שמור הגדרות".'); break;
       case 'learn': {
         a.disabled = true;
@@ -673,6 +675,47 @@ ${examples}
     addComposerButtons();
   }
 
+  // ---------- ייצוא הדף לבדיקה ----------
+  // מוריד את ה-HTML של הדף כמו שהוא עכשיו (כולל חלון העריכה הפתוח), עם סיכום של מה שהסקריפט זיהה.
+  // לא כולל את חלון הסקריפט עצמו ולא את מפתח ה-API.
+  function exportPageForDebug() {
+    const clone = document.documentElement.cloneNode(true);
+    const r = clone.querySelector('#pe-root');
+    if (r) r.remove();
+    // תוכן נוכחי של שדות (ב-HTML רגיל מופיע רק הערך ההתחלתי)
+    const live = document.querySelectorAll('textarea, input');
+    const cloned = clone.querySelectorAll('textarea, input');
+    live.forEach((el, i) => {
+      const c = cloned[i];
+      if (!c || el.closest('#pe-root') || el.type === 'password' || el.type === 'hidden') return;
+      if (el.tagName === 'TEXTAREA') c.textContent = el.value; else c.setAttribute('value', el.value);
+    });
+    // מקצרים: בלי תוכן של סקריפטים, סגנונות ותמונות מוטמעות
+    clone.querySelectorAll('script').forEach((x) => { x.textContent = ''; });
+    clone.querySelectorAll('style').forEach((x) => { x.textContent = '/* הוסר */'; });
+    clone.querySelectorAll('[src^="data:"]').forEach((x) => x.setAttribute('src', 'data:removed'));
+    const ta = composerTextarea();
+    const info = {
+      scriptVersion: (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '?',
+      url: location.href,
+      time: new Date().toISOString(),
+      userAgent: navigator.userAgent,
+      composers: document.querySelectorAll('.composer').length,
+      formattingBars: document.querySelectorAll('.composer .formatting-bar').length,
+      formattingGroups: document.querySelectorAll('.composer .formatting-group').length,
+      composerButtonsAdded: document.querySelectorAll('.pe-composer-btn').length,
+      composerTextarea: ta ? (ta.className || ta.tagName) : null,
+      lastField: lastField ? (lastField.tagName + '.' + (lastField.className || '')) : null,
+    };
+    const html = '<!-- poster debug export\n' + JSON.stringify(info, null, 2).replace(/--/g, '- -') + '\n-->\n<!DOCTYPE html>\n' + clone.outerHTML;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    a.download = 'poster-debug-' + location.hostname + '-' + Date.now() + '.html';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
   // קיצור מקלדת: Alt+Shift+E
   document.addEventListener('keydown', (e) => {
     if (e.altKey && e.shiftKey && (e.code === 'KeyE')) {
@@ -683,5 +726,6 @@ ${examples}
 
   GM_registerMenuCommand('✨ פתח את עורך הפוסטים', () => openPanel());
   GM_registerMenuCommand('⚙️ הגדרות (מפתח API, מודל)', () => openPanel(true));
+  GM_registerMenuCommand('🧪 ייצא את הדף לבדיקה (HTML)', exportPageForDebug);
   GM_registerMenuCommand('👁️ הצג/הסתר כפתור צף', () => { set('showButton', !get('showButton')); applyFabVisibility(); });
 })();
