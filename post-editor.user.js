@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         עורך פוסטים עם Claude
 // @namespace    https://github.com/shmuel-sinay/poster
-// @version      1.4.0
+// @version      1.4.1
 // @description  עריכה אוטומטית של פוסטים בעזרת Claude: מסדר את הטקסט כמו מדריך מעוצב, ושומר על הניסוח המקורי.
 // @author       shmuel-sinay
 // @match        *://*/*
@@ -365,7 +365,7 @@ ${examples}
     if (!el || el.nodeType !== 1) return null;
     if (el.closest && el.closest('#pe-root')) return null;
     if (el.tagName === 'TEXTAREA') return el;
-    if (el.tagName === 'INPUT' && /^(text|search|)$/i.test(el.type)) return el;
+    // שדות של שורה אחת (כמו כותרת הנושא) הם לא פוסט, ולכן לא נלקחים
     if (el.isContentEditable) {
       let r = el;
       while (r.parentElement && r.parentElement.isContentEditable) r = r.parentElement;
@@ -525,7 +525,13 @@ ${examples}
   function openPanel(showSettings) {
     const sel = currentSelection().trim();
     if (sel) inEl.value = sel;
-    else if (!inEl.value.trim() && lastField) inEl.value = fieldText(lastField).trim();
+    else {
+      // אם חלון כתיבת הודעה בפורום פתוח, עובדים תמיד על גוף ההודעה שלו
+      const ta = composerTextarea();
+      if (ta) lastField = ta;
+      const t = fieldText(lastField).trim();
+      if (t) inEl.value = t;
+    }
     loadSettings();
     $('pe-settings').classList.toggle('open', !!showSettings || !get('apiKey'));
     if (!get('apiKey')) msg('כדי להתחיל, הדבק את מפתח ה-API שלך בהגדרות למטה ולחץ "שמור הגדרות".');
@@ -638,8 +644,11 @@ ${examples}
 
   // ---------- כפתור ✨ בתוך שורת הכלים של עורך ההודעות בפורום (NodeBB) ----------
   function composerTextarea(fromEl) {
-    const composer = (fromEl && fromEl.closest('.composer')) || document.querySelector('.composer');
-    return composer && composer.querySelector('textarea.write, textarea');
+    const composers = [...document.querySelectorAll('.composer')];
+    const composer = (fromEl && fromEl.closest('.composer'))
+      || composers.find((c) => c.offsetParent !== null && !c.classList.contains('minimized'))
+      || composers[0];
+    return composer && (composer.querySelector('textarea.write') || composer.querySelector('textarea'));
   }
   function addComposerButtons() {
     document.querySelectorAll('.composer .formatting-bar, .composer .formatting-group').forEach((bar) => {
